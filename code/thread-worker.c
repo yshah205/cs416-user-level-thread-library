@@ -40,9 +40,9 @@ static long        last_boost_us = 0;  /* MLFQ rule 5 bookkeeping */
 /* Accumulators behind avg_turn_time / avg_resp_time.  Only worker threads
  * created through worker_create() are counted; the main thread is not a
  * worker and would otherwise skew both averages. */
-static long        completed      = 0;
-static double      total_turn_ms  = 0;
-static double      total_resp_ms  = 0;
+static long        completed  = 0;
+static double      total_turn = 0;
+static double      total_resp = 0;
 
 static void schedule();
 #ifndef MLFQ
@@ -56,12 +56,24 @@ static void sched_mlfq();
  * Small helpers                                                           *
  * ----------------------------------------------------------------------- */
 
-/* A monotonic microsecond clock.  clock_gettime() is async-signal-safe, so
- * it is also legal to call from the timer handler. */
+/* Monotonic clocks.  clock_gettime() is async-signal-safe, so both are also
+ * legal to call from the timer handler.
+ *
+ * Scheduling runs on the microsecond clock -- quanta are whole milliseconds,
+ * so there is nothing finer to resolve.  The reported metrics use the
+ * nanosecond clock instead: a thread can easily be created and finish inside
+ * one microsecond tick, and on the coarser clock its turnaround would truncate
+ * to exactly 0. */
 static long now_us(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return ts.tv_sec * 1000000L + ts.tv_nsec / 1000;
+}
+
+static long now_ns(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * 1000000000L + ts.tv_nsec;
 }
 
 /* The runqueues, the TCB lists and the mutex wait lists are shared between
@@ -325,8 +337,8 @@ static void init_library(void) {
 	main_tcb->priority     = 0;
 	main_tcb->is_main      = 1;
 	main_tcb->started      = 1;
-	main_tcb->arrival_us   = now_us();
-	main_tcb->first_run_us = main_tcb->arrival_us;
+	main_tcb->arrival_ns   = now_ns();
+	main_tcb->first_run_ns = main_tcb->arrival_ns;
 	main_tcb->all_next     = all_threads;
 	all_threads            = main_tcb;
 	current                = main_tcb;
@@ -437,7 +449,7 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 
 	/* Response and turnaround times are both measured from here: the moment
 	 * the thread is first put on a runqueue. */
-	t->arrival_us = now_us();
+	t->arrival_ns = now_ns();
 
 	t->all_next = all_threads;
 	all_threads = t;
@@ -492,7 +504,7 @@ void worker_exit(void *value_ptr) {
 	me            = current;
 	me->retval    = value_ptr;
 	me->status    = FINISHED;
-	me->finish_us = now_us();
+	me->finish_ns = now_ns();
 	me->cpu_us   += now_us() - dispatch_us;
 
 	if (!me->is_main) {
@@ -500,11 +512,11 @@ void worker_exit(void *value_ptr) {
 		 * time this thread actually got the CPU (recorded at dispatch).  Both
 		 * are folded into the running averages here, when the thread is really
 		 * done, so that threads still in flight do not skew them. */
-		total_turn_ms += (double) (me->finish_us - me->arrival_us) / STAT_DIVISOR;
-		total_resp_ms += me->resp_ms;
+		total_turn += (double) (me->finish_ns - me->arrival_ns) / STAT_DIVISOR;
+		total_resp += me->resp_time;
 		completed++;
-		avg_turn_time = total_turn_ms / (double) completed;
-		avg_resp_time = total_resp_ms / (double) completed;
+		avg_turn_time = total_turn / (double) completed;
+		avg_resp_time = total_resp / (double) completed;
 	}
 
 	/* Let whoever is waiting for us in worker_join() run again. */
@@ -792,11 +804,11 @@ static void schedule() {
 		next->status = SCHEDULED;
 
 		if (!next->started) {
-			next->started     = 1;
-			next->first_run_us = now_us();
+			next->started      = 1;
+			next->first_run_ns = now_ns();
 			if (!next->is_main)
-				next->resp_ms = (double) (next->first_run_us - next->arrival_us)
-				                / STAT_DIVISOR;
+				next->resp_time = (double) (next->first_run_ns - next->arrival_ns)
+				                  / STAT_DIVISOR;
 		}
 
 		next->cntx_switches++;

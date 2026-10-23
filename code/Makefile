@@ -14,10 +14,10 @@ ifdef QUANTUM
 QFLAG = -DQUANTUM=$(QUANTUM)
 endif
 
-# Report turnaround/response in microseconds instead of milliseconds:
-#   make STATS=US
-ifeq ($(STATS), US)
-QFLAG += -DSTATS_IN_US
+# Turnaround/response are reported in microseconds by default; report them in
+# milliseconds instead with:  make STATS=MS
+ifeq ($(STATS), MS)
+QFLAG += -DSTATS_IN_MS
 endif
 
 all: clean thread-worker.a

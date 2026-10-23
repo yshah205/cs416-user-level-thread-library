@@ -309,11 +309,20 @@ are shared verbatim with PSJF; only the selection function differs.
 
 * **Response time** = first dispatch − enqueue at creation.
 * **Turnaround time** = `worker_exit` − enqueue at creation.
-* Both are accumulated per thread and averaged over completed *worker* threads only.
-  The write-up never states which unit it expects, so they are reported in
-  **milliseconds** by default; building with `make STATS=US` reports microseconds
-  instead (a one-line `STAT_DIVISOR` switch in `thread-worker.h`). State in your
-  tables which one you used.
+* Both are accumulated per thread and averaged over completed *worker* threads only,
+  and reported in **microseconds**, matching the unit of the `Total run time` line
+  the benchmarks print. The write-up does not state a unit; `make STATS=MS` switches
+  both to milliseconds via a one-line `STAT_DIVISOR` in `thread-worker.h`.
+* **These two metrics are timestamped in nanoseconds**, not microseconds, and only
+  converted to the reported unit at the end. Scheduling itself still runs on a
+  microsecond clock, since a quantum is a whole number of milliseconds and there is
+  nothing finer to resolve. The distinction matters because a short-lived thread can
+  be created and finish inside a single microsecond tick: on a microsecond clock its
+  arrival and finish timestamps are *equal*, so its turnaround is exactly 0 — and 0
+  divided by any unit is still 0. That is the real cause of a reported turnaround of
+  zero, and it is a resolution problem rather than a formatting one, so no choice of
+  unit fixes it. With nanosecond timestamps a 400 ns thread reports 0.4 µs instead
+  of 0.
 * **`tot_cntx_switches`** counts dispatches — each time the scheduler puts a thread
   on the CPU — including the main thread's. Per-thread counts are also kept in each
   TCB.
@@ -347,7 +356,10 @@ Two changes were made on the course's instruction:
   The fix was applied to every benchmark, not just one, so run times stay
   comparable between them.
 * **`VECTOR_SIZE` raised from 3,000,000 to 30,000,000** in `vector_multiply.c`, so
-  the threads run long enough to produce non-zero turnaround times.
+  the threads run long enough to produce non-zero turnaround times. (The underlying
+  cause of zero turnaround was clock resolution, addressed separately in §1.10 by
+  timestamping the metrics in nanoseconds; a larger vector raises the signal as
+  well, and is what the course asked for.)
 
 The second change has two consequences worth noting when reading the numbers.
 `r[]` and `s[]` together now occupy about 229 MB of BSS, and the benchmark performs

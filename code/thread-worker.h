@@ -63,11 +63,16 @@ typedef uint worker_t;
 #define BOOST_PERIOD 100
 #endif
 
-/* Units for avg_turn_time and avg_resp_time.  The write-up never says which
- * unit it expects, so these are reported in milliseconds by default.  Build
- * with -DSTATS_IN_US (or define it here) to report microseconds instead. */
-#ifdef STATS_IN_US
-#define STAT_DIVISOR 1.0
+/* Units for avg_turn_time and avg_resp_time.  The write-up never says which it
+ * expects; microseconds is the default, to match the "Total run time: ...
+ * micro-seconds" line the benchmarks print.  Build with -DSTATS_IN_MS (or
+ * define it here) to report milliseconds instead.
+ *
+ * Both metrics are timestamped in nanoseconds and only converted here, so a
+ * thread that lives less than a microsecond still reports a non-zero time
+ * rather than being truncated to 0 -- these are divisors from nanoseconds. */
+#ifdef STATS_IN_MS
+#define STAT_DIVISOR 1000000.0
 #else
 #define STAT_DIVISOR 1000.0
 #endif
@@ -112,11 +117,11 @@ typedef struct TCB {
 	long          allot_us;       /* CPU used at the current MLFQ level */
 	long          cntx_switches;  /* times this thread was put on the CPU */
 
-	/* metrics */
-	long          arrival_us;     /* when it was first put on a runqueue */
-	long          first_run_us;   /* when it was first scheduled */
-	long          finish_us;      /* when it called worker_exit() */
-	double        resp_ms;        /* first_run_us - arrival_us, in ms */
+	/* metrics, in nanoseconds so that very short threads do not round to 0 */
+	long          arrival_ns;     /* when it was first put on a runqueue */
+	long          first_run_ns;   /* when it was first scheduled */
+	long          finish_ns;      /* when it called worker_exit() */
+	double        resp_time;      /* first_run_ns - arrival_ns, in STAT units */
 	int           started;        /* has it been scheduled at least once? */
 	int           is_main;        /* excluded from the per-thread averages */
 

@@ -34,7 +34,7 @@ cd code
 make                 # PSJF (default)
 make SCHED=MLFQ      # MLFQ
 make QUANTUM=25      # override the 10 ms default quantum
-make STATS=US        # report turnaround/response in us instead of ms
+make STATS=MS        # report turnaround/response in ms instead of us
 ```
 
 Produces `libthread-worker.a`. Then:
