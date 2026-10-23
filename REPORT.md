@@ -309,8 +309,11 @@ are shared verbatim with PSJF; only the selection function differs.
 
 * **Response time** = first dispatch − enqueue at creation.
 * **Turnaround time** = `worker_exit` − enqueue at creation.
-* Both are accumulated per thread and averaged over completed *worker* threads only,
-  and both are reported in **milliseconds** as `double`s.
+* Both are accumulated per thread and averaged over completed *worker* threads only.
+  The write-up never states which unit it expects, so they are reported in
+  **milliseconds** by default; building with `make STATS=US` reports microseconds
+  instead (a one-line `STAT_DIVISOR` switch in `thread-worker.h`). State in your
+  tables which one you used.
 * **`tot_cntx_switches`** counts dispatches — each time the scheduler puts a thread
   on the CPU — including the main thread's. Per-thread counts are also kept in each
   TCB.
@@ -332,6 +335,28 @@ are shared verbatim with PSJF; only the selection function differs.
 ---
 
 ## 2. Benchmark results
+
+### Modifications to the provided benchmarks
+
+Two changes were made on the course's instruction:
+
+* **`Total run time` now really is microseconds.** All three benchmarks computed
+  `(end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000`,
+  which is milliseconds, under a label that said micro-seconds. All three now use
+  `(end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000`.
+  The fix was applied to every benchmark, not just one, so run times stay
+  comparable between them.
+* **`VECTOR_SIZE` raised from 3,000,000 to 30,000,000** in `vector_multiply.c`, so
+  the threads run long enough to produce non-zero turnaround times.
+
+The second change has two consequences worth noting when reading the numbers.
+`r[]` and `s[]` together now occupy about 229 MB of BSS, and the benchmark performs
+30 million mutex lock/unlock pairs rather than 3 million — which makes
+`vector_multiply` by far the heaviest test of mutex cost, and the clearest place to
+see the gap against native pthreads. The reported sum still overflows `int`, but
+`verify()` overflows identically, so the correctness check remains exact.
+
+### Collecting the numbers
 
 Collected with `benchmarks/run_benchmarks.sh`, which sweeps both policies, several
 quantum values and thread counts, and then re-runs everything against the native
@@ -396,10 +421,13 @@ it in `thread-worker.h` or with `-DBOOST_PERIOD=`). A very small `S` collapses M
 toward round-robin; a very large one lets low-priority threads languish. Report what
 you see.
 
-**An observation on the harness.** The benchmarks print
-`(end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000`
-under the label "micro-seconds". That expression is milliseconds, and the provided
-output lines were not modified.
+**Mutex cost at 30 million operations.** `vector_multiply` locks and unlocks once
+per element, so at `VECTOR_SIZE = 30000000` it is essentially a microbenchmark of
+mutex overhead. Compare its run time against `parallel_cal`, which does the same
+kind of arithmetic but takes the lock only once per row: the difference is what this
+library's synchronization costs. How does that compare with the native pthread
+baseline, where an uncontended lock is also a single atomic but contention drops
+into a futex rather than this scheduler?
 
 ---
 

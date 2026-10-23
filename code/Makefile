@@ -14,6 +14,12 @@ ifdef QUANTUM
 QFLAG = -DQUANTUM=$(QUANTUM)
 endif
 
+# Report turnaround/response in microseconds instead of milliseconds:
+#   make STATS=US
+ifeq ($(STATS), US)
+QFLAG += -DSTATS_IN_US
+endif
+
 all: clean thread-worker.a
 
 thread-worker.a: thread-worker.o

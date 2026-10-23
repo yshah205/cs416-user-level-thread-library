@@ -34,6 +34,7 @@ cd code
 make                 # PSJF (default)
 make SCHED=MLFQ      # MLFQ
 make QUANTUM=25      # override the 10 ms default quantum
+make STATS=US        # report turnaround/response in us instead of ms
 ```
 
 Produces `libthread-worker.a`. Then:
@@ -50,6 +51,9 @@ make
 
 `./run_benchmarks.sh` sweeps both policies across several quanta and thread counts,
 adds a native-pthread baseline, and writes `results.csv` plus a Markdown table.
+
+`vector_multiply` allocates roughly 229 MB of BSS and performs 30 million mutex
+lock/unlock pairs, which makes it the heaviest test of synchronization cost here.
 
 **Linux only.** `makecontext`/`swapcontext` are unimplemented on Apple Silicon —
 they compile but segfault — so this does not run on an arm64 Mac. It compiles there

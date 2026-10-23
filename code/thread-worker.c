@@ -500,7 +500,7 @@ void worker_exit(void *value_ptr) {
 		 * time this thread actually got the CPU (recorded at dispatch).  Both
 		 * are folded into the running averages here, when the thread is really
 		 * done, so that threads still in flight do not skew them. */
-		total_turn_ms += (double) (me->finish_us - me->arrival_us) / 1000.0;
+		total_turn_ms += (double) (me->finish_us - me->arrival_us) / STAT_DIVISOR;
 		total_resp_ms += me->resp_ms;
 		completed++;
 		avg_turn_time = total_turn_ms / (double) completed;
@@ -796,7 +796,7 @@ static void schedule() {
 			next->first_run_us = now_us();
 			if (!next->is_main)
 				next->resp_ms = (double) (next->first_run_us - next->arrival_us)
-				                / 1000.0;
+				                / STAT_DIVISOR;
 		}
 
 		next->cntx_switches++;

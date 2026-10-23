@@ -63,6 +63,15 @@ typedef uint worker_t;
 #define BOOST_PERIOD 100
 #endif
 
+/* Units for avg_turn_time and avg_resp_time.  The write-up never says which
+ * unit it expects, so these are reported in milliseconds by default.  Build
+ * with -DSTATS_IN_US (or define it here) to report microseconds instead. */
+#ifdef STATS_IN_US
+#define STAT_DIVISOR 1.0
+#else
+#define STAT_DIVISOR 1000.0
+#endif
+
 /* Per-thread stack size.  The write-up suggests SIGSTKSZ or "a few tens of
  * kilobytes".  SIGSTKSZ is only 8-16 KB on some glibc builds, which is tight
  * for benchmark code that calls fscanf(), so use a fixed 128 KB instead. */
