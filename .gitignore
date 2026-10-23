@@ -1,0 +1,21 @@
+# Build output
+*.o
+*.a
+*.dSYM/
+
+# Benchmark binaries
+code/benchmarks/parallel_cal
+code/benchmarks/vector_multiply
+code/benchmarks/external_cal
+code/benchmarks/test
+code/benchmarks/testcase
+
+# Generated benchmark data and results
+code/benchmarks/record/
+code/benchmarks/results.csv
+code/benchmarks/results.md
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+*~
