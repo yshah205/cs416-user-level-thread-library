@@ -2,7 +2,7 @@
 
 // List all group member's name: Yug Shah
 // username of iLab: ys991
-// iLab Server:
+// iLab Server: ilab2.cs.rutgers.edu
 
 #ifndef WORKER_T_H
 #define WORKER_T_H

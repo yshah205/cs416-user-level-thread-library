@@ -129,8 +129,8 @@ function fmt(v, n, prec) {
 END {
 	print "# Benchmark results"
 	print ""
-	printf "Mean of %s run(s) per configuration. Run time is as the benchmark\n", REPEATS
-	print  "prints it; turnaround and response are in milliseconds."
+	printf "Mean of %s run(s) per configuration. Run time, turnaround and\n", REPEATS
+	print  "response are all in microseconds (the benchmark default)."
 	for (i = 1; i <= nb; i++) {
 		b = border[i]
 		print ""

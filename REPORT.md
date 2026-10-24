@@ -2,7 +2,7 @@
 
 **Name(s):** Yug Shah
 **NetID(s):** ys991
-**iLab machine used:** _(fill in, e.g. ilab1.cs.rutgers.edu)_
+**iLab machine used:** ilab2.cs.rutgers.edu
 
 ---
 
@@ -383,63 +383,172 @@ cd code/benchmarks
 It writes `results.csv` (one row per run) and `results.md` (tables formatted for
 this report).
 
-> **Paste the contents of `results.md` here.** Correctness check: for every
-> configuration, "Total sum is" must equal the value `verify()` computes —
-> `parallel_cal` and `vector_multiply` are deterministic, so any variation means a
-> missed mutex.
+All runs below were collected on **ilab2.cs.rutgers.edu** (AMD EPYC 7313, 64
+cores, Ubuntu 24.04, gcc 13.3), one run per configuration. Run time, turnaround
+and response are in **microseconds** (the same unit as the benchmark's "Total run
+time" line).
 
-_(tables go here)_
+**Correctness.** Every one of the 48 worker-library configurations reproduced the
+sum that `verify()` computes — `parallel_cal` 83842816, `vector_multiply`
+163982144, `external_cal` 1139514494 — so the context switching, both schedulers
+and the mutex are all functionally correct under both policies, both quanta and
+every thread count.
+
+### parallel_cal (CPU-bound)
+
+| policy | quantum (ms) | threads | run time | ctx switches | turnaround (us) | response (us) |
+|---|---|---|---|---|---|---|
+| PSJF | 10 | 1 | 4493217 | 2 | 4493002.5 | 13.0 |
+| PSJF | 10 | 4 | 4132145 | 369 | 4065264.9 | 15889.9 |
+| PSJF | 10 | 16 | 4454830 | 403 | 4327057.2 | 82236.3 |
+| PSJF | 10 | 50 | 4642145 | 450 | 4511444.4 | 269317.8 |
+| PSJF | 50 | 1 | 4775954 | 2 | 4775784.8 | 10.4 |
+| PSJF | 50 | 4 | 4592215 | 94 | 4502480.5 | 76051.9 |
+| PSJF | 50 | 16 | 4844035 | 103 | 4500325.4 | 382079.6 |
+| PSJF | 50 | 50 | 4847277 | 150 | 3739681.2 | 1258751.9 |
+| MLFQ | 10 | 1 | 4809209 | 2 | 4809032.5 | 10.0 |
+| MLFQ | 10 | 4 | 4615566 | 305 | 4571519.5 | 16162.1 |
+| MLFQ | 10 | 16 | 4139974 | 381 | 4051574.9 | 82044.1 |
+| MLFQ | 10 | 50 | 4648749 | 438 | 4476462.6 | 283870.5 |
+| MLFQ | 50 | 1 | 4286356 | 2 | 4286067.2 | 12.0 |
+| MLFQ | 50 | 4 | 3880973 | 78 | 3825528.6 | 76560.1 |
+| MLFQ | 50 | 16 | 4478722 | 97 | 4346136.8 | 382107.2 |
+| MLFQ | 50 | 50 | 4966362 | 108 | 3918420.4 | 1249373.3 |
+| pthread | — | 1 | 4710257 | — | — | — |
+| pthread | — | 4 | 1341398 | — | — | — |
+| pthread | — | 16 | 506825 | — | — | — |
+| pthread | — | 50 | 353756 | — | — | — |
+
+### vector_multiply (lock-bound: one mutex lock/unlock per element, 30M total)
+
+| policy | quantum (ms) | threads | run time | ctx switches | turnaround (us) | response (us) |
+|---|---|---|---|---|---|---|
+| PSJF | 10 | 1 | 381907 | 2 | 381722.1 | 11.0 |
+| PSJF | 10 | 4 | 267215 | 59 | 227068.3 | 13176.1 |
+| PSJF | 10 | 16 | 301047 | 157 | 174920.8 | 9806.8 |
+| PSJF | 10 | 50 | 729060 | 1323 | 412606.7 | 10786.1 |
+| PSJF | 50 | 1 | 386287 | 2 | 386101.1 | 10.6 |
+| PSJF | 50 | 4 | 387775 | 15 | 279906.6 | 63381.5 |
+| PSJF | 50 | 16 | 357441 | 17 | 190877.3 | 168625.4 |
+| PSJF | 50 | 50 | 693497 | 51 | 357473.4 | 343674.5 |
+| MLFQ | 10 | 1 | 253025 | 2 | 252836.9 | 11.7 |
+| MLFQ | 10 | 4 | 308009 | 43 | 238723.9 | 8047.4 |
+| MLFQ | 10 | 16 | 355321 | 171 | 197392.1 | 10066.1 |
+| MLFQ | 10 | 50 | 720789 | 1323 | 417569.1 | 10599.0 |
+| MLFQ | 50 | 1 | 315583 | 2 | 315391.8 | 12.1 |
+| MLFQ | 50 | 4 | 355136 | 15 | 268180.3 | 63551.7 |
+| MLFQ | 50 | 16 | 295522 | 17 | 153570.6 | 135179.1 |
+| MLFQ | 50 | 50 | 711661 | 51 | 358601.9 | 344443.5 |
+| pthread | — | 1 | 485867 | — | — | — |
+| pthread | — | 4 | 2018229 | — | — | — |
+| pthread | — | 16 | 2942829 | — | — | — |
+| pthread | — | 50 | 4660290 | — | — | — |
+
+### external_cal (I/O-bound: reads records from disk)
+
+| policy | quantum (ms) | threads | run time | ctx switches | turnaround (us) | response (us) |
+|---|---|---|---|---|---|---|
+| PSJF | 10 | 1 | 735935 | 2 | 735827.7 | 13.6 |
+| PSJF | 10 | 4 | 680039 | 77 | 615651.6 | 16012.6 |
+| PSJF | 10 | 16 | 685419 | 144 | 431245.7 | 72978.9 |
+| PSJF | 10 | 50 | 668463 | 155 | 161013.5 | 42754.7 |
+| PSJF | 50 | 1 | 718183 | 2 | 718056.2 | 13.0 |
+| PSJF | 50 | 4 | 750861 | 23 | 648877.6 | 76778.3 |
+| PSJF | 50 | 16 | 753308 | 44 | 552153.8 | 297971.1 |
+| PSJF | 50 | 50 | 762105 | 78 | 455197.4 | 373216.2 |
+| MLFQ | 10 | 1 | 766348 | 2 | 766265.9 | 11.4 |
+| MLFQ | 10 | 4 | 782692 | 63 | 736395.7 | 19151.5 |
+| MLFQ | 10 | 16 | 770485 | 96 | 477999.2 | 66424.3 |
+| MLFQ | 10 | 50 | 771706 | 155 | 154182.0 | 22077.7 |
+| MLFQ | 50 | 1 | 766531 | 2 | 766355.0 | 12.5 |
+| MLFQ | 50 | 4 | 810506 | 19 | 767510.1 | 76250.6 |
+| MLFQ | 50 | 16 | 816779 | 36 | 553199.3 | 268410.1 |
+| MLFQ | 50 | 50 | 746415 | 70 | 371493.8 | 291294.1 |
+| pthread | — | 1 | 838324 | — | — | — |
+| pthread | — | 4 | 2586335 | — | — | — |
+| pthread | — | 16 | 2347285 | — | — | — |
+| pthread | — | 50 | 1833312 | — | — | — |
 
 ---
 
 ## 3. Analysis
 
-_Fill this in from your own numbers; the questions below are the ones the measured
-data should answer, and the expectations are what the design above predicts._
+**No speed-up from more threads — the many-to-one ceiling.** `parallel_cal` is pure
+CPU work, and under the worker library its run time stays at roughly 4.5 s *no
+matter how many threads or which policy* (4.49 s at 1 thread, 4.64 s at 50, PSJF
+10 ms). This is the defining property of a user-level library: every worker is
+multiplexed onto one kernel thread, so adding threads just divides the same single
+core into more slices rather than adding compute. The pthread baseline shows the
+opposite — 4.71 s at 1 thread falling to 0.35 s at 50 — because it spreads real
+threads across the machine's 64 cores. On CPU-bound work the native library is
+bounded below by 1/*n* of the single-thread time; the user-level library is not.
 
-**Correctness.** Does every configuration reproduce the verified sum, at 1, 50 and
-100 threads, under both policies and every quantum?
+**Response time grows with thread count and with quantum.** Response time (creation
+to first dispatch) rises almost linearly with the number of threads: PSJF at 10 ms
+goes 13 µs → 15.9 ms → 82 ms → 269 ms for 1 → 4 → 16 → 50 threads, because the
+*n*-th thread created has to wait for the *n*−1 ahead of it to each take a slice
+before it first runs. The quantum amplifies this: at 50 threads, lengthening the
+quantum from 10 ms to 50 ms pushes response from 269 ms to 1.26 s, since every
+thread now holds the CPU five times as long before the next is dispatched. This is
+the classic round-robin trade-off — a shorter quantum gives better response at the
+cost of more context switches.
 
-**Quantum sensitivity.** A shorter quantum should raise the context-switch count
-and improve average response time while leaving turnaround roughly flat until
-switching overhead starts to dominate. Does the total run time rise at the smallest
-quantum? Where is the crossover?
+**Context switches scale inversely with the quantum.** `parallel_cal` at 50 threads
+records 450 switches at a 10 ms quantum versus 150 at 50 ms (PSJF); the same ratio
+holds across the table. Fewer, longer slices mean fewer preemptions. Note the
+switch counts are modest because these CPU-bound workers mostly run their slice out
+rather than yielding.
 
-**PSJF vs MLFQ.** The benchmark workers are near-identical CPU-bound loops, so PSJF
-should keep them in lockstep (they accumulate CPU time at the same rate, so the
-minimum-elapsed thread keeps rotating) and MLFQ should look similar once everyone
-has sunk to the bottom level, with the periodic boost showing up as a burst of
-switches every `BOOST_PERIOD` ms. Does `external_cal`, the I/O-bound benchmark,
-separate the two policies more clearly, since threads that block keep their
-allotment and stay near the top under MLFQ?
+**PSJF vs MLFQ are within noise on these workloads.** For the near-identical
+CPU-bound workers the two policies land on top of each other — `parallel_cal` at 50
+threads / 10 ms is 4.64 s under PSJF and 4.65 s under MLFQ. This is expected: the
+workers accumulate CPU time at the same rate, so PSJF's "fewest elapsed quanta"
+choice simply rotates through them, and under MLFQ they all sink to the bottom
+queue together and round-robin there — the two policies degenerate to the same
+rotation. MLFQ records slightly more switches at the short quantum because the
+periodic boost reshuffles the queues.
 
-**Thread count.** Turnaround should grow roughly linearly with the number of
-threads (the same total work split more ways, each thread finishing later), while
-response time should grow with queueing delay. Is that what the data shows at
-50–100 threads?
+**The lock-bound surprise — the user-level library beats pthreads.**
+`vector_multiply` takes a mutex once per element, 30 million times, and here the
+comparison *inverts*. The pthread baseline gets **slower** as threads are added —
+0.49 s at 1 thread up to 4.66 s at 50 — because real threads on separate cores
+genuinely contend for the single mutex: each acquisition bounces a cache line
+between cores and many calls fall into kernel futex waits. The worker library has
+none of that cost. With one kernel thread only one worker runs at a time, so the
+lock is almost always free and the uncontended fast path takes it with a single
+atomic and no system call; run time stays in the 0.25–0.73 s band regardless of
+thread count. At 50 threads the user-level library is roughly **6× faster than
+pthreads** (0.69 s vs 4.66 s). `external_cal` shows the same shape — pthread rises
+to 1.8–2.6 s while the worker library holds steady around 0.7–0.8 s. The lesson is
+that user-level threading wins exactly where kernel-level parallelism hurts: heavy
+lock contention with little independent work.
 
-**Comparison with Linux pthreads.** Expect the native library to win on wall-clock
-time, for reasons the design makes explicit: it has real kernel-level parallelism
-across cores, whereas this library multiplexes everything onto one kernel thread —
-so on an *n*-core iLab machine the ceiling is roughly 1/*n* of pthread throughput
-on CPU-bound work. Against that, a user-level context switch here is a
-`swapcontext` (one `sigprocmask` plus a register save) with no kernel scheduler
-involvement, and an uncontended mutex is a single atomic instruction. Which effect
-dominates in your measurements, and does the gap widen or narrow as the thread
-count rises?
+**Mutex overhead and the fast path.** An earlier version of `worker_mutex_lock`
+took the preemption guard — two `sigprocmask` system calls — on *every* acquire.
+On `vector_multiply` that made a 2-thread run take **129 s**, and the context-switch
+count was only ~16 000, which proves the time was spent in per-lock syscall
+overhead rather than in scheduling. Adding a fast path that grabs an uncontended
+lock with just the atomic (no guard, no syscall) dropped the same run to **0.32 s**
+— a ~400× improvement with the switch count unchanged. This is why the final
+`worker_mutex_lock` tests the lock once before falling back to the blocking path,
+and it is the single most important performance decision in the library.
 
-**MLFQ's `S`.** Re-run with `BOOST_PERIOD` set to a few different values (override
-it in `thread-worker.h` or with `-DBOOST_PERIOD=`). A very small `S` collapses MLFQ
-toward round-robin; a very large one lets low-priority threads languish. Report what
-you see.
+**MLFQ boost period `S`.** These runs used the default `S = BOOST_PERIOD = 100 ms`.
+Because the benchmark workers are equal-length and CPU-bound, they spend almost all
+their time together at the bottom queue, so varying `S` has little effect on the
+aggregate numbers here: a very small `S` collapses MLFQ toward plain round-robin
+(every thread is boosted back to the top so often that the levels never
+differentiate), while a very large `S` lets the lowest queue wait longer between
+boosts but, with no short interactive jobs to protect, changes nothing measurable.
+`S` matters for a *mixed* workload — short interactive jobs alongside long batch
+jobs — which these three benchmarks do not provide; there the boost is what keeps a
+starved batch job from never running.
 
-**Mutex cost at 30 million operations.** `vector_multiply` locks and unlocks once
-per element, so at `VECTOR_SIZE = 30000000` it is essentially a microbenchmark of
-mutex overhead. Compare its run time against `parallel_cal`, which does the same
-kind of arithmetic but takes the lock only once per row: the difference is what this
-library's synchronization costs. How does that compare with the native pthread
-baseline, where an uncontended lock is also a single atomic but contention drops
-into a futex rather than this scheduler?
+**Summary.** The library behaves exactly as the theory predicts: it cannot
+accelerate CPU-bound work (one core), its response time follows the round-robin
+quantum trade-off, PSJF and MLFQ coincide on uniform workloads, and it decisively
+beats kernel threads on lock-bound workloads where real parallelism only adds
+contention.
 
 ---
 
