@@ -1,7 +1,7 @@
 // File:	thread-worker.c
 
-// List all group member's name:
-// username of iLab:
+// List all group member's name: Yug Shah
+// username of iLab: ys991
 // iLab Server:
 
 #include "thread-worker.h"

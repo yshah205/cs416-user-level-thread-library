@@ -1,7 +1,7 @@
 # CS416 Project 2 — User-level Thread Library and Scheduler
 
-**Name(s):** _(fill in)_
-**NetID(s):** _(fill in)_
+**Name(s):** Yug Shah
+**NetID(s):** ys991
 **iLab machine used:** _(fill in, e.g. ilab1.cs.rutgers.edu)_
 
 ---

@@ -1,7 +1,7 @@
 // File:	worker_t.h
 
-// List all group member's name:
-// username of iLab:
+// List all group member's name: Yug Shah
+// username of iLab: ys991
 // iLab Server:
 
 #ifndef WORKER_T_H
