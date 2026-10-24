@@ -531,11 +531,17 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
 		return 0;
 	}
 
+	// if the lock is free, take it without the preemption/syscall overhead.
+	// this matters a lot: the benchmarks lock/unlock millions of times.
+	if (__sync_lock_test_and_set(&mutex->locked, 1) == 0) {
+		mutex->owner = current;
+		return 0;
+	}
+
 	disable_preempt();
 
-	// test-and-set; if the lock is held, block instead of spinning (one
-	// kernel thread, so spinning would never let the holder run) and retry
-	// after being woken
+	// held: block instead of spinning (one kernel thread, so spinning would
+	// never let the holder run) and retry after being woken
 	while (__sync_lock_test_and_set(&mutex->locked, 1) == 1) {
 		current->status = BLOCKED;
 		enqueue(&mutex->waiters, current);
@@ -566,10 +572,14 @@ int worker_mutex_unlock(worker_mutex_t *mutex) {
 		return 0;
 	}
 
-	disable_preempt();
-
 	mutex->owner = NULL;
 	__sync_lock_release(&mutex->locked);
+
+	// nobody waiting: nothing to do, skip the scheduler/syscall overhead
+	if (mutex->waiters.head == NULL)
+		return 0;
+
+	disable_preempt();
 
 	// wake all waiters and let them compete for the lock again
 	while ((t = dequeue(&mutex->waiters)) != NULL)

@@ -31,8 +31,8 @@ if [ ! -f "$HDR" ]; then
 	exit 1
 fi
 
-# external_cal needs its data files
-[ -d ./record ] || ./genRecord.sh
+# external_cal needs its data files; build() regenerates them after each
+# make (make clean deletes record/), so nothing to do here
 
 cp "$HDR" "$HDR.bak"
 restore() { mv -f "$HDR.bak" "$HDR" 2>/dev/null; }
@@ -51,6 +51,9 @@ build() {         # build <SCHED> <QUANTUM>
 	  && make SCHED="$1" QUANTUM="$2" >/dev/null 2>&1 ) || return 1
 	make clean >/dev/null 2>&1
 	make >/dev/null 2>&1
+	# the benchmark "make" runs clean, which deletes record/, so (re)generate
+	# the external_cal data after building, not before
+	[ -d ./record ] || ./genRecord.sh >/dev/null 2>&1
 }
 
 CSV=results.csv
