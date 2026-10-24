@@ -9,15 +9,11 @@
 
 #define _GNU_SOURCE
 
-/* The ucontext routines are deprecated on macOS and are hidden by the SDK
- * unless _XOPEN_SOURCE is defined.  This block exists only so the library can
- * be syntax-checked on a Mac; it compiles away on Linux (the iLab machines)
- * and can be deleted without affecting anything. */
+// lets the ucontext functions compile on macOS (iLab/Linux ignores this)
 #if defined(__APPLE__)
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
-/* _XOPEN_SOURCE hides the BSD typedefs that _GNU_SOURCE gives us on Linux. */
 #define _DARWIN_C_SOURCE 1
 #endif
 
@@ -40,56 +36,36 @@
 
 typedef uint worker_t;
 
-/* ------------------------------------------------------------------------ *
- * Tunables                                                                 *
- * ------------------------------------------------------------------------ */
-
-/* Length of one scheduling quantum, in MILLISECONDS.  This is the knob the
- * graders change, so it lives here and can also be overridden on the command
- * line with -DQUANTUM=<ms>. */
+// scheduling quantum in ms (graders change this; can also pass -DQUANTUM=)
 #ifndef QUANTUM
 #define QUANTUM 10
 #endif
 
-/* MLFQ: number of priority levels.  Level 0 is the highest priority and gets
- * the shortest time slice; level i gets (i+1) * QUANTUM milliseconds. */
+// MLFQ: number of priority levels, 0 = highest
 #ifndef NUM_LEVELS
 #define NUM_LEVELS 4
 #endif
 
-/* MLFQ rule 5: period S, in MILLISECONDS, after which every thread is boosted
- * back to the topmost queue so that nothing starves. */
+// MLFQ rule 5: boost everyone to the top every this-many ms
 #ifndef BOOST_PERIOD
 #define BOOST_PERIOD 100
 #endif
 
-/* Units for avg_turn_time and avg_resp_time.  The write-up never says which it
- * expects; microseconds is the default, to match the "Total run time: ...
- * micro-seconds" line the benchmarks print.  Build with -DSTATS_IN_MS (or
- * define it here) to report milliseconds instead.
- *
- * Both metrics are timestamped in nanoseconds and only converted here, so a
- * thread that lives less than a microsecond still reports a non-zero time
- * rather than being truncated to 0 -- these are divisors from nanoseconds. */
+// turnaround/response reported in us; -DSTATS_IN_MS for ms. timestamps are
+// kept in ns so a sub-microsecond thread doesn't round to 0.
 #ifdef STATS_IN_MS
 #define STAT_DIVISOR 1000000.0
 #else
 #define STAT_DIVISOR 1000.0
 #endif
 
-/* Per-thread stack size.  The write-up suggests SIGSTKSZ or "a few tens of
- * kilobytes".  SIGSTKSZ is only 8-16 KB on some glibc builds, which is tight
- * for benchmark code that calls fscanf(), so use a fixed 128 KB instead. */
+// SIGSTKSZ is too small on some systems for fscanf etc., so use a fixed size
 #define STACK_SIZE (128 * 1024)
 
-/* ------------------------------------------------------------------------ *
- * Thread states                                                            *
- * ------------------------------------------------------------------------ */
-
-#define READY     0   /* on a runqueue, waiting for the CPU */
-#define SCHEDULED 1   /* currently on the CPU */
-#define BLOCKED   2   /* waiting on a mutex or on another thread to exit */
-#define FINISHED  3   /* called worker_exit(), not yet joined */
+#define READY     0
+#define SCHEDULED 1
+#define BLOCKED   2
+#define FINISHED  3   // exited, waiting to be joined
 
 typedef struct TCB {
 	/* add important states in a thread control block */
@@ -100,39 +76,35 @@ typedef struct TCB {
 	// thread priority
 	// And more ...
 
-	worker_t      id;             /* unique thread id (0 is the main thread) */
-	int           status;         /* READY / SCHEDULED / BLOCKED / FINISHED */
-	ucontext_t    ctx;            /* saved execution state */
-	void         *stack;          /* malloc'd stack backing ctx (NULL for main) */
-	int           priority;       /* MLFQ level, 0 = highest priority */
+	worker_t      id;             // 0 is the main thread
+	int           status;
+	ucontext_t    ctx;
+	void         *stack;          // NULL for main
+	int           priority;       // MLFQ level
 
-	/* what this thread runs */
 	void       *(*function)(void *);
 	void         *arg;
-	void         *retval;         /* value handed to worker_exit() */
+	void         *retval;
 
-	/* scheduling bookkeeping */
-	long          cpu_us;         /* total CPU time consumed, microseconds */
-	long          elapsed;        /* whole quanta consumed -- the PSJF key */
-	long          allot_us;       /* CPU used at the current MLFQ level */
-	long          cntx_switches;  /* times this thread was put on the CPU */
+	long          cpu_us;         // total CPU time used
+	long          elapsed;        // quanta used -- PSJF key
+	long          allot_us;       // CPU used at current MLFQ level
+	long          cntx_switches;
 
-	/* metrics, in nanoseconds so that very short threads do not round to 0 */
-	long          arrival_ns;     /* when it was first put on a runqueue */
-	long          first_run_ns;   /* when it was first scheduled */
-	long          finish_ns;      /* when it called worker_exit() */
-	double        resp_time;      /* first_run_ns - arrival_ns, in STAT units */
-	int           started;        /* has it been scheduled at least once? */
-	int           is_main;        /* excluded from the per-thread averages */
+	long          arrival_ns;     // first put on a runqueue
+	long          first_run_ns;   // first scheduled
+	long          finish_ns;      // exited
+	double        resp_time;
+	int           started;
+	int           is_main;
 
-	struct TCB   *joiner;         /* thread blocked in worker_join() on us */
+	struct TCB   *joiner;         // thread waiting on us in join()
 
-	struct TCB   *qnext;          /* runqueue / wait-queue link */
-	struct TCB   *all_next;       /* global list of live TCBs */
+	struct TCB   *qnext;          // runqueue / wait-queue link
+	struct TCB   *all_next;       // global list of all TCBs
 } tcb;
 
-/* A simple FIFO of TCBs, with a tail pointer so that enqueue is O(1).
- * Used for the runqueues, the mutex wait lists and the exited list. */
+// FIFO queue of TCBs with a tail pointer (runqueues, wait lists, exited list)
 typedef struct tcb_queue {
 	tcb *head;
 	tcb *tail;
@@ -141,10 +113,10 @@ typedef struct tcb_queue {
 
 /* mutex struct definition */
 typedef struct worker_mutex_t {
-	volatile int  locked;       /* 0 = free, 1 = held; set with test-and-set */
+	volatile int  locked;       // 0 free, 1 held (test-and-set)
 	int           initialized;
-	tcb          *owner;        /* thread currently holding the mutex */
-	tcb_queue     waiters;      /* threads blocked trying to acquire it */
+	tcb          *owner;
+	tcb_queue     waiters;
 } worker_mutex_t;
 
 /* Function Declarations: */
@@ -176,7 +148,6 @@ int worker_mutex_unlock(worker_mutex_t *mutex);
 int worker_mutex_destroy(worker_mutex_t *mutex);
 
 
-/* Global statistics, defined in thread-worker.c. */
 extern long   tot_cntx_switches;
 extern double avg_turn_time;
 extern double avg_resp_time;

@@ -6,7 +6,7 @@
 
 #include "thread-worker.h"
 
-//Global counter for total context switches and 
+//Global counter for total context switches and
 //average turn around and response time
 long tot_cntx_switches=0;
 double avg_turn_time=0;
@@ -15,31 +15,25 @@ double avg_resp_time=0;
 
 // INITAILIZE ALL YOUR OTHER VARIABLES HERE
 
-static int         lib_init   = 0;     /* has the library been set up yet? */
-static ucontext_t  sched_ctx;          /* the scheduler runs on this context */
-static char       *sched_stack = NULL; /* and on its own stack */
-static tcb        *current    = NULL;  /* the thread on the CPU right now */
-static tcb        *main_tcb   = NULL;  /* TCB for the benchmark's main thread */
-static tcb        *all_threads = NULL; /* every live TCB, linked by all_next */
-static worker_t    next_tid   = 1;     /* id 0 is reserved for main */
+static int         lib_init   = 0;
+static ucontext_t  sched_ctx;          // scheduler runs here
+static char       *sched_stack = NULL;
+static tcb        *current    = NULL;  // thread on the CPU now
+static tcb        *all_threads = NULL; // all live TCBs
+static worker_t    next_tid   = 1;     // 0 is main
 
-/* Runqueues.  PSJF only ever uses runq[0]; MLFQ uses all NUM_LEVELS of them,
- * with runq[0] the highest priority. */
+// PSJF uses runq[0] only; MLFQ uses all levels, runq[0] highest
 static tcb_queue   runq[NUM_LEVELS];
 
-/* Threads that called worker_exit().  Their stacks cannot be freed by the
- * exiting thread itself (it is still standing on one), so the scheduler
- * reclaims them on its next pass. */
+// exited threads, stacks freed later by the scheduler
 static tcb_queue   finished_q;
 
-static sigset_t    prof_set;           /* just { SIGPROF } */
+static sigset_t    prof_set;           // { SIGPROF }
 static int         timer_armed  = 0;
-static long        dispatch_us  = 0;   /* when `current` was given the CPU */
-static long        last_boost_us = 0;  /* MLFQ rule 5 bookkeeping */
+static long        dispatch_us  = 0;   // when current got the CPU
+static long        last_boost_us = 0;
 
-/* Accumulators behind avg_turn_time / avg_resp_time.  Only worker threads
- * created through worker_create() are counted; the main thread is not a
- * worker and would otherwise skew both averages. */
+// running totals for the averages (main thread excluded)
 static long        completed  = 0;
 static double      total_turn = 0;
 static double      total_resp = 0;
@@ -52,34 +46,22 @@ static void sched_mlfq();
 #endif
 
 
-/* ----------------------------------------------------------------------- *
- * Small helpers                                                           *
- * ----------------------------------------------------------------------- */
-
-/* Monotonic clocks.  clock_gettime() is async-signal-safe, so both are also
- * legal to call from the timer handler.
- *
- * Scheduling runs on the microsecond clock -- quanta are whole milliseconds,
- * so there is nothing finer to resolve.  The reported metrics use the
- * nanosecond clock instead: a thread can easily be created and finish inside
- * one microsecond tick, and on the coarser clock its turnaround would truncate
- * to exactly 0. */
+// microsecond clock for scheduling
 static long now_us(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return ts.tv_sec * 1000000L + ts.tv_nsec / 1000;
 }
 
+// nanosecond clock for metrics (us would round short threads to 0)
 static long now_ns(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return ts.tv_sec * 1000000000L + ts.tv_nsec;
 }
 
-/* The runqueues, the TCB lists and the mutex wait lists are shared between
- * ordinary library code and the SIGPROF handler, so every library entry point
- * blocks SIGPROF while it touches them.  That is the user-level equivalent of
- * disabling interrupts around a kernel critical section. */
+// block/unblock SIGPROF around anything that touches shared state
+// (user-level version of disabling interrupts)
 static void disable_preempt(void) {
 	sigprocmask(SIG_BLOCK, &prof_set, NULL);
 }
@@ -88,18 +70,6 @@ static void enable_preempt(void) {
 	sigprocmask(SIG_UNBLOCK, &prof_set, NULL);
 }
 
-/* prof_set has to be valid before the first library call, because mutexes are
- * initialized before the first worker_create(). */
-__attribute__((constructor))
-static void worker_lib_ctor(void) {
-	sigemptyset(&prof_set);
-	sigaddset(&prof_set, SIGPROF);
-}
-
-
-/* ----------------------------------------------------------------------- *
- * Queue operations (shared by the runqueues and the mutex wait lists)     *
- * ----------------------------------------------------------------------- */
 
 static void enqueue(tcb_queue *q, tcb *t) {
 	t->qnext = NULL;
@@ -123,8 +93,7 @@ static tcb *dequeue(tcb_queue *q) {
 	return t;
 }
 
-/* Remove a specific thread from the middle of a queue.  PSJF needs this
- * because it picks the minimum rather than the head. */
+// remove from the middle (PSJF picks the min, not the head)
 static void queue_remove(tcb_queue *q, tcb *t) {
 	tcb *prev = NULL;
 	tcb *cur  = q->head;
@@ -146,7 +115,6 @@ static void queue_remove(tcb_queue *q, tcb *t) {
 	cur->qnext = NULL;
 }
 
-/* How many threads are sitting on a runqueue waiting for the CPU. */
 static int runnable_count(void) {
 	int i, n = 0;
 	for (i = 0; i < NUM_LEVELS; i++)
@@ -180,14 +148,8 @@ static void remove_from_all(tcb *target) {
 }
 
 
-/* ----------------------------------------------------------------------- *
- * Timer                                                                   *
- * ----------------------------------------------------------------------- *
- * One-shot ITIMER_PROF timers, re-armed on every dispatch.  A one-shot timer
- * is used instead of a periodic one so that each MLFQ level can have its own
- * time slice, and so that a thread which gives up the CPU early is not
- * immediately interrupted by the leftover of someone else's quantum.        */
-
+// one-shot ITIMER_PROF, re-armed every dispatch so each MLFQ level can have
+// its own slice and an early yield isn't cut short by the old quantum
 static void arm_timer(long usec) {
 	struct itimerval it;
 
@@ -208,18 +170,15 @@ static void disarm_timer(void) {
 	setitimer(ITIMER_PROF, &it, NULL);
 }
 
-/* Time slice this thread gets.  Under MLFQ the higher the priority, the
- * shorter the slice (OSTEP section 8.5). */
+// MLFQ: lower priority -> longer slice
 static long slice_for(tcb *t) {
 #ifndef MLFQ
-	(void) t;
 	return (long) QUANTUM * 1000L;
 #else
 	return (long) QUANTUM * 1000L * (t->priority + 1);
 #endif
 }
 
-/* Put a thread on the runqueue it belongs to and mark it READY. */
 static void make_runnable(tcb *t) {
 	t->status = READY;
 
@@ -233,24 +192,16 @@ static void make_runnable(tcb *t) {
 	enqueue(&runq[0], t);
 #endif
 
-	/* The timer is only armed while somebody is actually waiting for the CPU
-	 * (see the dispatch path in schedule()).  Waking a thread up from a mutex
-	 * or from worker_exit() creates such a waiter, so if the running thread is
-	 * currently un-preemptible it has to be put back on the clock -- otherwise
-	 * a thread that never yields would starve the one it just woke. */
+	// if we just woke a thread while the running one has the clock off,
+	// re-arm it so a non-yielding thread can't starve the one it woke
 	if (!timer_armed && current && current->status == SCHEDULED)
 		arm_timer(slice_for(current));
 }
 
 #ifdef MLFQ
-/* Charge `ran` microseconds of CPU time to a thread's allotment at its current
- * level, and demote it once that allotment is used up (MLFQ rules 2-4).
- *
- * Charging elapsed time rather than counting timer interrupts is what makes a
- * thread unable to game the scheduler: giving the CPU up early preserves the
- * rest of its allotment, but it does not refund it, so a thread that yields
- * just before every slice expires still sinks at the same rate as one that
- * runs flat out.  Only the periodic boost (rule 5) refunds an allotment. */
+// charge CPU time to the thread's allotment at its level and demote once used
+// up (rules 2-4). charging time, not timer ticks, stops gaming: yielding early
+// keeps the leftover allotment but never refunds it.
 static void mlfq_charge(tcb *t, long ran) {
 	long slice = slice_for(t);
 
@@ -262,14 +213,13 @@ static void mlfq_charge(tcb *t, long ran) {
 		t->priority++;
 		t->allot_us = 0;
 	} else {
-		t->allot_us = slice;      /* already at the bottom; stay there */
+		t->allot_us = slice;      // already at the bottom
 	}
 }
 #endif
 
-/* Reclaim the stacks of threads that have exited.  Safe here and only here,
- * because the scheduler runs on its own stack.  The TCB itself is kept alive
- * so that worker_join() can still read the return value. */
+// free exited stacks -- only safe from the scheduler's own stack. the TCB
+// stays around so join() can still read the return value.
 static void reap_finished(void) {
 	tcb *t;
 	while ((t = dequeue(&finished_q)) != NULL) {
@@ -279,40 +229,23 @@ static void reap_finished(void) {
 }
 
 
-/* ----------------------------------------------------------------------- *
- * Preemption                                                              *
- * ----------------------------------------------------------------------- */
-
-/* SIGPROF handler: the quantum expired, so hand the CPU to the scheduler.
- *
- * swapcontext() saves and restores the signal mask along with the registers,
- * which is what makes switching out of a signal handler work here:
- *   - sched_ctx was captured with SIGPROF blocked, so the scheduler itself can
- *     never be interrupted by the quantum timer;
- *   - the context saved into current->ctx has SIGPROF blocked (the kernel
- *     blocks it for the duration of the handler), so when this thread is
- *     resumed it comes back here, returns from the handler, and the normal
- *     signal return path unblocks SIGPROF again. */
+// quantum expired -> jump to the scheduler. swapcontext saves/restores the
+// signal mask too: sched_ctx has SIGPROF blocked so the scheduler is never
+// preempted, and a resumed thread returns through here and unblocks it again.
 static void timer_handler(int signum) {
-	(void) signum;
-
 	if (!current || current->status != SCHEDULED)
 		return;
 
-	timer_armed     = 0;      /* one-shot: it has just expired */
+	timer_armed = 0;          // one-shot, just fired
 	current->status = READY;
 	swapcontext(&current->ctx, &sched_ctx);
 }
 
 
-/* ----------------------------------------------------------------------- *
- * One-time library setup                                                  *
- * ----------------------------------------------------------------------- *
- * Called from the first worker_create().  Returns with SIGPROF blocked, so the
- * caller must not disable preemption again.                                 */
-
+// first-call setup; returns with SIGPROF blocked
 static void init_library(void) {
 	struct sigaction sa;
+	tcb *main_tcb;
 	int i;
 
 	sigemptyset(&prof_set);
@@ -323,10 +256,8 @@ static void init_library(void) {
 		memset(&runq[i], 0, sizeof runq[i]);
 	memset(&finished_q, 0, sizeof finished_q);
 
-	/* The thread that is already running -- the benchmark's main -- needs a TCB
-	 * of its own, otherwise it could not be descheduled while it waits in
-	 * worker_join() or on a mutex.  Its "stack" is the real process stack, so
-	 * there is nothing to allocate and nothing to free. */
+	// main needs a TCB so it can be descheduled in join()/mutex_lock. its
+	// stack is the real process stack, nothing to allocate or free.
 	main_tcb = (tcb *) calloc(1, sizeof(tcb));
 	if (!main_tcb) {
 		fprintf(stderr, "thread-worker: out of memory\n");
@@ -343,7 +274,6 @@ static void init_library(void) {
 	all_threads            = main_tcb;
 	current                = main_tcb;
 
-	/* The scheduler gets a context and a stack of its own. */
 	sched_stack = (char *) malloc(STACK_SIZE);
 	if (!sched_stack) {
 		fprintf(stderr, "thread-worker: out of memory\n");
@@ -357,13 +287,11 @@ static void init_library(void) {
 	sched_ctx.uc_stack.ss_sp    = sched_stack;
 	sched_ctx.uc_stack.ss_size  = STACK_SIZE;
 	sched_ctx.uc_stack.ss_flags = 0;
-	sigaddset(&sched_ctx.uc_sigmask, SIGPROF);   /* never preempt the scheduler */
+	sigaddset(&sched_ctx.uc_sigmask, SIGPROF);   // scheduler is never preempted
 	makecontext(&sched_ctx, (void (*)(void)) schedule, 0);
 
-	/* sigaction() rather than signal(): signal() does not guarantee the
-	 * handler stays installed.  SA_RESTART so that a blocking read inside a
-	 * benchmark (external_cal's fscanf) is resumed rather than failing with
-	 * EINTR once the thread is scheduled again. */
+	// sigaction (not signal, which may not stay installed); SA_RESTART so
+	// external_cal's fscanf resumes instead of failing with EINTR
 	memset(&sa, 0, sizeof sa);
 	sa.sa_handler = &timer_handler;
 	sa.sa_flags   = SA_RESTART;
@@ -375,15 +303,13 @@ static void init_library(void) {
 
 	dispatch_us   = now_us();
 	last_boost_us = dispatch_us;
-	timer_armed   = 0;   /* armed as soon as a second thread becomes runnable */
+	timer_armed   = 0;
 	lib_init      = 1;
 }
 
-/* Every worker thread starts here instead of jumping straight into its body.
- * The wrapper exists so that a thread which simply returns -- rather than
- * calling worker_exit() -- is still cleaned up properly. */
+// threads start here so a body that just returns is still cleaned up
 static void worker_stub(void) {
-	tcb  *me  = current;     /* the scheduler set this just before swapping in */
+	tcb  *me  = current;
 	void *ret = NULL;
 
 	enable_preempt();
@@ -394,21 +320,19 @@ static void worker_stub(void) {
 
 
 /* create a new thread */
-int worker_create(worker_t * thread, pthread_attr_t * attr, 
+int worker_create(worker_t * thread, pthread_attr_t * attr,
                       void *(*function)(void*), void * arg) {
 
        // - create Thread Control Block (TCB)
        // - create and initialize the context of this worker thread
        // - allocate space of stack for this thread to run
-       // after everything is set, push this thread into run queue and 
+       // after everything is set, push this thread into run queue and
        // - make it ready for the execution.
 
 	tcb *t;
 
-	(void) attr;                  /* ignored, as the write-up allows */
-
 	if (!lib_init)
-		init_library();           /* returns with SIGPROF already blocked */
+		init_library();           // returns with SIGPROF blocked
 	else
 		disable_preempt();
 
@@ -428,28 +352,24 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 	t->id       = next_tid++;
 	t->function = function;
 	t->arg      = arg;
-	t->priority = 0;              /* new threads enter at the top MLFQ level */
+	t->priority = 0;
 	t->status   = READY;
 
-	/* Build the context this thread will run in. */
 	if (getcontext(&t->ctx) < 0) {
 		free(t->stack);
 		free(t);
 		enable_preempt();
 		return -1;
 	}
-	t->ctx.uc_link           = &sched_ctx;   /* fallback if the body returns */
+	t->ctx.uc_link           = &sched_ctx;   // fallback if the body returns
 	t->ctx.uc_stack.ss_sp    = t->stack;
 	t->ctx.uc_stack.ss_size  = STACK_SIZE;
 	t->ctx.uc_stack.ss_flags = 0;
-	/* getcontext() copied the caller's signal mask, which currently has
-	 * SIGPROF blocked.  A worker has to start out preemptible. */
+	// getcontext copied our mask (SIGPROF blocked); workers start preemptible
 	sigdelset(&t->ctx.uc_sigmask, SIGPROF);
 	makecontext(&t->ctx, (void (*)(void)) worker_stub, 0);
 
-	/* Response and turnaround times are both measured from here: the moment
-	 * the thread is first put on a runqueue. */
-	t->arrival_ns = now_ns();
+	t->arrival_ns = now_ns();     // response/turnaround measured from here
 
 	t->all_next = all_threads;
 	all_threads = t;
@@ -465,7 +385,7 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 
 /* give CPU possession to other user-level worker threads voluntarily */
 int worker_yield() {
-	
+
 	// - change worker thread's state from Running to Ready
 	// - save context of this thread to its thread control block
 	// - switch from thread context to scheduler context
@@ -482,9 +402,7 @@ int worker_yield() {
 	disarm_timer();
 	swapcontext(&current->ctx, &sched_ctx);
 
-	/* Back on the CPU.  SIGPROF is still blocked (it was blocked when the
-	 * context above was saved), so unblock it before returning. */
-	enable_preempt();
+	enable_preempt();         // back on the CPU, re-enable preemption
 	return 0;
 };
 
@@ -507,11 +425,8 @@ void worker_exit(void *value_ptr) {
 	me->finish_ns = now_ns();
 	me->cpu_us   += now_us() - dispatch_us;
 
+	// fold this thread's metrics into the averages now that it's really done
 	if (!me->is_main) {
-		/* Turnaround: creation to completion.  Response: creation to the first
-		 * time this thread actually got the CPU (recorded at dispatch).  Both
-		 * are folded into the running averages here, when the thread is really
-		 * done, so that threads still in flight do not skew them. */
 		total_turn += (double) (me->finish_ns - me->arrival_ns) / STAT_DIVISOR;
 		total_resp += me->resp_time;
 		completed++;
@@ -519,25 +434,24 @@ void worker_exit(void *value_ptr) {
 		avg_resp_time = total_resp / (double) completed;
 	}
 
-	/* Let whoever is waiting for us in worker_join() run again. */
+	// wake anyone waiting on us in join()
 	if (me->joiner) {
 		make_runnable(me->joiner);
 		me->joiner = NULL;
 	}
 
-	/* This thread is standing on the stack it would have to free, so hand it
-	 * to the scheduler and let it do the freeing from its own stack. */
+	// can't free our own stack here; let the scheduler do it
 	enqueue(&finished_q, me);
 
 	disarm_timer();
-	current = me;                 /* schedule() needs to see who just left */
-	setcontext(&sched_ctx);       /* does not return */
+	current = me;                 // so schedule() sees who left
+	setcontext(&sched_ctx);       // does not return
 };
 
 
 /* Wait for thread termination */
 int worker_join(worker_t thread, void **value_ptr) {
-	
+
 	// - wait for a specific thread to terminate
 	// - de-allocate any dynamic memory created by the joining thread
 
@@ -553,27 +467,26 @@ int worker_join(worker_t thread, void **value_ptr) {
 	target = find_tcb(thread);
 	if (!target || target == current) {
 		enable_preempt();
-		return -1;            /* no such thread, or joining yourself */
+		return -1;            // no such thread, or joining self
 	}
 
 	while (target->status != FINISHED) {
 		if (target->joiner && target->joiner != current) {
 			enable_preempt();
-			return -1;        /* somebody else is already joining it */
+			return -1;        // already being joined by someone else
 		}
 		target->joiner  = current;
 		current->status = BLOCKED;
 
 		disarm_timer();
 		swapcontext(&current->ctx, &sched_ctx);
-		/* Resumed with SIGPROF still blocked; re-check the condition. */
+		// resumed with SIGPROF still blocked; re-check the condition
 	}
 
 	if (value_ptr)
 		*value_ptr = target->retval;
 
-	/* The joined thread is gone for good now: drop its TCB (and its stack, if
-	 * the scheduler has not already reclaimed it). */
+	// target is done for good now; drop its TCB and stack
 	queue_remove(&finished_q, target);
 	remove_from_all(target);
 	free(target->stack);
@@ -584,11 +497,9 @@ int worker_join(worker_t thread, void **value_ptr) {
 };
 
 /* initialize the mutex lock */
-int worker_mutex_init(worker_mutex_t *mutex, 
+int worker_mutex_init(worker_mutex_t *mutex,
                           const pthread_mutexattr_t *mutexattr) {
 	//- initialize data structures for this mutex
-
-	(void) mutexattr;             /* ignored, as the write-up allows */
 
 	if (!mutex)
 		return -1;
@@ -614,36 +525,23 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
 	if (!mutex)
 		return -1;
 
-	/* Before the first worker_create() there is only one thread of execution,
-	 * so there is nothing to serialize against. */
+	// single thread of execution before the first worker_create
 	if (!lib_init) {
 		mutex->locked = 1;
 		return 0;
 	}
 
-	/* Fast path.  An uncontended test-and-set touches no scheduler state, so
-	 * it needs no preemption guard at all -- worth caring about, because the
-	 * benchmarks take and release these mutexes millions of times and
-	 * sigprocmask() is a real system call. */
-	if (__sync_lock_test_and_set(&mutex->locked, 1) == 0) {
-		mutex->owner = current;
-		return 0;
-	}
-
-	/* Contended: from here on the wait list and the runqueues are in play. */
 	disable_preempt();
 
+	// test-and-set; if the lock is held, block instead of spinning (one
+	// kernel thread, so spinning would never let the holder run) and retry
+	// after being woken
 	while (__sync_lock_test_and_set(&mutex->locked, 1) == 1) {
-		/* Held by somebody else: block instead of spinning.  Spinning would
-		 * deadlock -- this is one kernel thread, so the holder can only make
-		 * progress if we give the CPU back. */
 		current->status = BLOCKED;
 		enqueue(&mutex->waiters, current);
 
 		disarm_timer();
 		swapcontext(&current->ctx, &sched_ctx);
-		/* Woken by worker_mutex_unlock(); go around and retry the
-		 * test-and-set, since another waiter may have won the race. */
 	}
 
 	mutex->owner = current;
@@ -654,8 +552,8 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
 
 /* release the mutex lock */
 int worker_mutex_unlock(worker_mutex_t *mutex) {
-	// - release mutex and make it available again. 
-	// - put threads in block list to run queue 
+	// - release mutex and make it available again.
+	// - put threads in block list to run queue
 	// so that they could compete for mutex later.
 
 	tcb *t;
@@ -668,21 +566,12 @@ int worker_mutex_unlock(worker_mutex_t *mutex) {
 		return 0;
 	}
 
+	disable_preempt();
+
 	mutex->owner = NULL;
 	__sync_lock_release(&mutex->locked);
 
-	/* Release first, then look for waiters -- never the other way round.  If
-	 * this thread were preempted after finding the wait list empty but before
-	 * releasing, a thread that blocked in the meantime would never be woken.
-	 * In this order the worst case is a thread that finds the lock already
-	 * free and takes it without ever being queued, which is harmless. */
-	if (mutex->waiters.head == NULL)
-		return 0;
-
-	disable_preempt();
-
-	/* Hand everybody back to the scheduler and let them compete for the lock
-	 * again, rather than picking a winner here. */
+	// wake all waiters and let them compete for the lock again
 	while ((t = dequeue(&mutex->waiters)) != NULL)
 		make_runnable(t);
 
@@ -700,9 +589,16 @@ int worker_mutex_destroy(worker_mutex_t *mutex) {
 	if (!mutex)
 		return -1;
 
+	if (!lib_init) {
+		mutex->locked      = 0;
+		mutex->owner       = NULL;
+		mutex->initialized = 0;
+		return 0;
+	}
+
 	disable_preempt();
 
-	/* Release it before tearing it down, so nothing is left blocked forever. */
+	// wake anything still waiting so it isn't stuck on a dead mutex
 	while ((t = dequeue(&mutex->waiters)) != NULL)
 		make_runnable(t);
 
@@ -716,8 +612,8 @@ int worker_mutex_destroy(worker_mutex_t *mutex) {
 
 /* scheduler */
 static void schedule() {
-	// - every time a timer interrupt occurs, your worker thread library 
-	// should be contexted switched from a thread context to this 
+	// - every time a timer interrupt occurs, your worker thread library
+	// should be contexted switched from a thread context to this
 	// schedule() function
 
 	// - invoke scheduling algorithms according to the policy (PSJF or MLFQ)
@@ -727,17 +623,14 @@ static void schedule() {
 	// else if (sched == MLFQ)
 	// 		sched_mlfq();
 
-	/* Entered from three places: the SIGPROF handler (quantum expired), a
-	 * voluntary swapcontext() in yield/join/mutex_lock, and setcontext() from
-	 * worker_exit().  Every one of them lands back at the swapcontext() at the
-	 * bottom of this loop, so the loop just runs forever. */
-
+	// entered from the timer handler, a voluntary swap (yield/join/lock), and
+	// setcontext() in exit; all land at the swap at the bottom, so loop forever
 	for (;;) {
 		tcb *prev = current;
 		tcb *next;
 		long now  = now_us();
 
-		/* --- 1. charge the thread that just left the CPU ----------------- */
+		// 1. charge the thread that just left the CPU
 		if (prev) {
 			long ran = now - dispatch_us;
 			if (ran < 0)
@@ -745,35 +638,29 @@ static void schedule() {
 
 			if (prev->status != FINISHED) {
 				prev->cpu_us += ran;
-
-				/* PSJF has no idea how long a thread will run for, so it uses
-				 * CPU time already consumed as the estimate: the longer a
-				 * thread has run, the longer it is assumed to still need. */
+				// PSJF estimate: more CPU used so far => assumed longer job
 				prev->elapsed = prev->cpu_us / ((long) QUANTUM * 1000L);
 			}
 
 			if (prev->status == READY) {
 #ifdef MLFQ
-				mlfq_charge(prev, ran);   /* rules 2-4: demote when used up */
+				mlfq_charge(prev, ran);
 #endif
 				make_runnable(prev);
 			}
-
-			/* BLOCKED threads are already parked on a wait list, and FINISHED
-			 * threads are on finished_q -- neither goes on a runqueue. */
+			// BLOCKED are on a wait list, FINISHED on finished_q
 		}
 		current = NULL;
 
-		/* --- 2. reclaim the stacks of threads that have exited ----------- */
+		// 2. reclaim exited stacks
 		reap_finished();
 
-		/* --- 3. pick the next thread ------------------------------------- */
-
+		// 3. pick the next thread
 // - schedule policy
 #ifndef MLFQ
 	// Choose PSJF
 		sched_psjf();
-#else 
+#else
 	// Choose MLFQ
 		sched_mlfq();
 #endif
@@ -781,9 +668,7 @@ static void schedule() {
 		next = current;
 
 		if (!next) {
-			/* Nothing is runnable.  Either every remaining thread is blocked
-			 * -- a real deadlock -- or there is simply nothing left to run,
-			 * which can only happen once main itself has exited. */
+			// nothing runnable: deadlock if anything is blocked, else main exited
 			int blocked = 0;
 			tcb *t;
 
@@ -800,7 +685,7 @@ static void schedule() {
 			exit(0);
 		}
 
-		/* --- 4. give it the CPU ------------------------------------------ */
+		// 4. give it the CPU
 		next->status = SCHEDULED;
 
 		if (!next->started) {
@@ -814,9 +699,8 @@ static void schedule() {
 		next->cntx_switches++;
 		tot_cntx_switches++;
 
-		/* Only run the clock when somebody else is actually waiting for the
-		 * CPU.  With a single runnable thread there is nothing to switch to,
-		 * so preempting it would just burn context switches. */
+		// only run the clock if someone else is waiting; no point preempting
+		// the only runnable thread
 		if (runnable_count() > 0)
 			arm_timer(slice_for(next));
 		else if (timer_armed)
@@ -833,11 +717,7 @@ static void sched_psjf() {
 	// - your own implementation of PSJF
 	// (feel free to modify arguments and return types)
 
-	/* "Shortest job" is approximated by the thread that has consumed the
-	 * fewest whole quanta so far (see the comment in schedule()).  A strict
-	 * `<` keeps the comparison stable, so threads tied on elapsed time are
-	 * served in FIFO order. */
-
+	// pick the thread with the fewest quanta used; strict < keeps ties FIFO
 	tcb *best = NULL;
 	tcb *t;
 
@@ -861,10 +741,8 @@ static void sched_mlfq() {
 
 	int i;
 
-	/* Rule 5: every BOOST_PERIOD milliseconds, move every thread back to the
-	 * topmost queue.  This is what stops long-running threads from starving at
-	 * the bottom, and it also defeats a thread that games the scheduler by
-	 * yielding just before its slice runs out. */
+	// rule 5: every BOOST_PERIOD ms move everyone back to the top queue so
+	// low-priority threads don't starve
 	if (now_us() - last_boost_us >= (long) BOOST_PERIOD * 1000L) {
 		tcb *t;
 
@@ -875,8 +753,7 @@ static void sched_mlfq() {
 				enqueue(&runq[0], t);
 			}
 
-		/* Blocked threads get boosted too, so that they come back at the top
-		 * once whatever they are waiting on releases them. */
+		// boost blocked threads too, so they come back at the top
 		for (t = all_threads; t; t = t->all_next)
 			if (t->status == BLOCKED) {
 				t->priority = 0;
@@ -886,8 +763,7 @@ static void sched_mlfq() {
 		last_boost_us = now_us();
 	}
 
-	/* Rules 1 and 2: always run something from the highest non-empty queue,
-	 * round-robin within a level. */
+	// rules 1-2: run from the highest non-empty queue, RR within a level
 	for (i = 0; i < NUM_LEVELS; i++) {
 		tcb *t = dequeue(&runq[i]);
 		if (t) {
@@ -911,38 +787,3 @@ void print_app_stats(void) {
 
 
 // Feel free to add any other functions you need
-
-/* Release what is still outstanding when the process exits.  The timer has to
- * be stopped first: a SIGPROF arriving mid-teardown would try to switch onto
- * memory that is being freed.
- *
- * Two allocations are deliberately left alone, because this destructor can run
- * on either of them.  A benchmark may call exit() from inside a worker thread
- * -- external_cal does exactly that when ./genRecord.sh has not been run yet
- * -- which would run this code on that worker's stack; and exit() from
- * schedule() runs it on the scheduler's stack.  Unmapping the stack underneath
- * ourselves would turn a clean exit into a segfault, and the kernel reclaims
- * both a moment later anyway. */
-__attribute__((destructor))
-static void worker_lib_dtor(void) {
-	tcb *t;
-
-	if (!lib_init)
-		return;
-
-	disable_preempt();
-	disarm_timer();
-
-	t = all_threads;
-	while (t) {
-		tcb *nxt = t->all_next;
-		if (t != current)
-			free(t->stack);     /* not the stack we may be running on */
-		free(t);
-		t = nxt;
-	}
-	all_threads = NULL;
-	current     = NULL;
-	main_tcb    = NULL;
-	lib_init    = 0;
-}
